@@ -9,6 +9,7 @@ import ssl
 import sys
 import time
 import hashlib
+import re
 from datetime import datetime
 from requests.exceptions import RequestException
 from urllib.parse import urlparse
@@ -100,11 +101,12 @@ class PegasusScan:
         self.session.headers.update({
             'User-Agent': 'PegasusScan/1.0',
         })
+        self.base_url = self.url.rstrip("/")
     
     def log(self, message, level="INFO"):
         """Log messages based on verbosity level"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if self.verbose or level == "ERROR":
+        if self.verbose or level in {"ERROR", "FOUND", "WARN"}:
             color = Colors.GREEN if level == "INFO" else Colors.RED if level == "ERROR" else Colors.YELLOW
             print(f"{color}[{timestamp}] [{level}] {message}{Colors.ENDC}")
     
@@ -118,6 +120,9 @@ class PegasusScan:
         })
         color = Colors.RED if severity == "Critical" else Colors.YELLOW if severity == "High" else Colors.GREEN
         self.log(f"{scan_type}: {details}", "FOUND")
+
+    def build_url(self, path):
+        return f"{self.base_url}/{path.lstrip('/')}"
     
     def scan_vulnerabilities(self):
         """Scan for common vulnerable paths"""
@@ -280,6 +285,178 @@ class PegasusScan:
                 
         except RequestException as e:
             self.log(f"Error scanning HTTP headers: {str(e)}", "ERROR")
+
+    def scan_https_redirect(self):
+        """Check if HTTP redirects to HTTPS"""
+        if not self.url.startswith("http://"):
+            return
+        
+        self.log("Checking HTTPS redirect...")
+        try:
+            response = self.session.get(self.url, timeout=self.timeout, allow_redirects=False)
+            location = response.headers.get("Location", "")
+            if response.status_code in [301, 302, 307, 308] and location.startswith("https://"):
+                self.add_result("HTTPS Redirect", f"Redirects to {location}", "Low")
+            else:
+                self.add_result("HTTPS Redirect", "HTTP does not redirect to HTTPS", "Medium")
+        except RequestException as e:
+            self.log(f"Error checking HTTPS redirect: {str(e)}", "ERROR")
+
+    def scan_http_methods(self):
+        """Check for dangerous HTTP methods"""
+        self.log("Checking allowed HTTP methods...")
+        try:
+            response = self.session.options(self.url, timeout=self.timeout)
+            allow_header = response.headers.get("Allow", "")
+            methods = {method.strip().upper() for method in allow_header.split(",") if method.strip()}
+            
+            if not methods:
+                allow_methods = response.headers.get("Access-Control-Allow-Methods", "")
+                methods = {method.strip().upper() for method in allow_methods.split(",") if method.strip()}
+            
+            dangerous_methods = {"PUT", "DELETE", "TRACE", "CONNECT", "PATCH"}
+            exposed = sorted(methods.intersection(dangerous_methods))
+            if exposed:
+                self.add_result("HTTP Methods", f"Dangerous methods enabled: {', '.join(exposed)}", "Medium")
+        except RequestException as e:
+            self.log(f"Error checking HTTP methods: {str(e)}", "ERROR")
+
+    def scan_trace_method(self):
+        """Check if TRACE method is enabled"""
+        self.log("Checking TRACE method...")
+        try:
+            response = self.session.request("TRACE", self.url, timeout=self.timeout)
+            if response.status_code < 400:
+                self.add_result("HTTP TRACE", "TRACE method is enabled", "Medium")
+        except RequestException as e:
+            self.log(f"Error checking TRACE method: {str(e)}", "ERROR")
+
+    def _extract_set_cookie_headers(self, response):
+        raw_headers = getattr(response.raw, "headers", None)
+        if raw_headers:
+            if hasattr(raw_headers, "get_all"):
+                return raw_headers.get_all("Set-Cookie")
+            if hasattr(raw_headers, "getlist"):
+                return raw_headers.getlist("Set-Cookie")
+
+        combined = response.headers.get("Set-Cookie")
+        if combined:
+            return [cookie.strip() for cookie in re.split(r", (?=[^;]+?=)", combined) if cookie.strip()]
+        return []
+
+    def scan_cookie_security(self):
+        """Check cookies for missing security flags"""
+        self.log("Checking cookie security flags...")
+        try:
+            response = self.session.get(self.url, timeout=self.timeout)
+            cookies = self._extract_set_cookie_headers(response)
+            if not cookies:
+                return
+            
+            for cookie in cookies:
+                cookie_name = cookie.split("=", 1)[0].strip() or "(unknown)"
+                lower_cookie = cookie.lower()
+                
+                if "secure" not in lower_cookie:
+                    severity = "Medium" if self.url.startswith("https://") else "Low"
+                    self.add_result("Cookie Security", f"Cookie '{cookie_name}' missing Secure flag", severity)
+                if "httponly" not in lower_cookie:
+                    self.add_result("Cookie Security", f"Cookie '{cookie_name}' missing HttpOnly flag", "Medium")
+                if "samesite" not in lower_cookie:
+                    self.add_result("Cookie Security", f"Cookie '{cookie_name}' missing SameSite flag", "Low")
+        except RequestException as e:
+            self.log(f"Error checking cookie security: {str(e)}", "ERROR")
+
+    def scan_cors_policy(self):
+        """Check for permissive CORS policies"""
+        self.log("Checking CORS policy...")
+        try:
+            origin = "https://evil.example"
+            response = self.session.get(self.url, headers={"Origin": origin}, timeout=self.timeout)
+            allow_origin = response.headers.get("Access-Control-Allow-Origin", "")
+            allow_credentials = response.headers.get("Access-Control-Allow-Credentials", "").lower()
+            
+            if allow_origin == "*" and allow_credentials == "true":
+                self.add_result("CORS Policy", "Wildcard origin allowed with credentials", "High")
+            elif allow_origin == origin and allow_credentials == "true":
+                self.add_result("CORS Policy", "Reflects arbitrary origin with credentials", "High")
+            elif allow_origin == origin:
+                self.add_result("CORS Policy", "Reflects arbitrary origin", "Medium")
+        except RequestException as e:
+            self.log(f"Error checking CORS policy: {str(e)}", "ERROR")
+
+    def scan_directory_listing(self):
+        """Check for directory listing exposure"""
+        self.log("Checking for directory listing...")
+        try:
+            response = self.session.get(f"{self.base_url}/", timeout=self.timeout)
+            if response.status_code == 200:
+                indicators = ["Index of /", "Directory listing for", "Parent Directory"]
+                if any(indicator in response.text for indicator in indicators):
+                    self.add_result("Directory Listing", f"Directory listing enabled at {self.base_url}/", "Medium")
+        except RequestException as e:
+            self.log(f"Error checking directory listing: {str(e)}", "ERROR")
+
+    def scan_security_txt(self):
+        """Check for security.txt"""
+        self.log("Checking security.txt...")
+        paths = [".well-known/security.txt", "security.txt"]
+        found = False
+        for path in paths:
+            try:
+                response = self.session.get(self.build_url(path), timeout=self.timeout)
+                if response.status_code == 200:
+                    self.add_result("security.txt", f"Found {path}", "Low")
+                    found = True
+                    break
+            except RequestException as e:
+                self.log(f"Error checking {path}: {str(e)}", "ERROR")
+        if not found:
+            self.add_result("security.txt", "security.txt not found", "Low")
+
+    def scan_sitemap(self):
+        """Check for sitemap.xml"""
+        self.log("Checking sitemap.xml...")
+        try:
+            response = self.session.get(self.build_url("sitemap.xml"), timeout=self.timeout)
+            if response.status_code == 200 and ("<urlset" in response.text or "<sitemapindex" in response.text):
+                url_count = len(re.findall(r"<loc>", response.text))
+                detail = f"Sitemap discovered with {url_count} URLs" if url_count else "Sitemap discovered"
+                self.add_result("Sitemap", detail, "Low")
+        except RequestException as e:
+            self.log(f"Error checking sitemap.xml: {str(e)}", "ERROR")
+
+    def scan_open_redirect(self):
+        """Check for open redirect vulnerabilities"""
+        self.log("Checking for open redirects...")
+        payload = "https://example.com"
+        parameters = ["next", "url", "redirect", "return", "dest", "destination", "continue"]
+        for parameter in parameters:
+            try:
+                response = self.session.get(self.url, params={parameter: payload}, timeout=self.timeout, allow_redirects=False)
+                location = response.headers.get("Location", "")
+                if response.status_code in [301, 302, 303, 307, 308] and payload in location:
+                    self.add_result("Open Redirect", f"Parameter '{parameter}' redirects to external site", "High")
+                    break
+            except RequestException as e:
+                self.log(f"Error checking open redirect with {parameter}: {str(e)}", "ERROR")
+
+    def scan_backup_files(self):
+        """Check for exposed backup files"""
+        self.log("Checking for backup files...")
+        backup_files = [
+            "index.php~", "index.php.bak", "index.php.old", "index.php.save",
+            "index.html~", "index.html.bak", "index.html.old", "config.php.bak",
+            "config.php~", ".env.bak", ".env.old", "backup.tar.gz", "backup.zip"
+        ]
+        
+        for file in backup_files:
+            try:
+                response = self.session.get(self.build_url(file), timeout=self.timeout)
+                if response.status_code == 200:
+                    self.add_result("Backup File", f"Found backup file: {self.build_url(file)}", "High")
+            except RequestException:
+                pass
 
     def scan_ssl_tls(self):
         """Scan SSL/TLS configuration"""
@@ -445,6 +622,16 @@ class PegasusScan:
             self.directory_brute_force()
             self.enumerate_subdomains()
             self.scan_http_headers()
+            self.scan_https_redirect()
+            self.scan_http_methods()
+            self.scan_trace_method()
+            self.scan_cookie_security()
+            self.scan_cors_policy()
+            self.scan_directory_listing()
+            self.scan_security_txt()
+            self.scan_sitemap()
+            self.scan_open_redirect()
+            self.scan_backup_files()
             
             # Only run SSL/TLS scan if using HTTPS
             if self.url.startswith("https://"):

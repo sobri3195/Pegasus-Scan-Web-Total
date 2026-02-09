@@ -21,6 +21,16 @@ Pegasus Scan Web Total adalah scanner keamanan web komprehensif yang dapat mende
 - **Analisis Robots.txt**: Mengekstrak informasi berharga dari file robots.txt
 - **Deteksi File Sensitif**: Mengidentifikasi file-file sensitif yang terekspos
 - **Deteksi CMS**: Menentukan sistem manajemen konten yang digunakan oleh target
+- **Deteksi Redirect HTTPS**: Memeriksa apakah HTTP diarahkan ke HTTPS
+- **Audit Metode HTTP**: Menemukan metode HTTP berbahaya (PUT/DELETE/TRACE)
+- **Pemeriksaan TRACE Method**: Deteksi dukungan metode TRACE
+- **Audit Cookie Security Flags**: Memeriksa Secure/HttpOnly/SameSite pada cookie
+- **Audit CORS**: Mendeteksi kebijakan CORS yang terlalu permisif
+- **Deteksi Directory Listing**: Memeriksa listing direktori yang terbuka
+- **Deteksi security.txt**: Memeriksa ketersediaan file security.txt
+- **Deteksi Sitemap**: Menemukan sitemap.xml pada target
+- **Deteksi Open Redirect**: Menguji parameter redirect terbuka
+- **Deteksi File Backup**: Mencari file cadangan yang terekspos
 
 ## Sistem Proteksi
 
@@ -28,6 +38,7 @@ Pegasus Scan Web Total dilengkapi dengan sistem proteksi canggih:
 
 - **Verifikasi Lisensi**: Memastikan hanya pengguna resmi yang dapat menggunakan alat ini
 - **Pengecekan Integritas Kode**: Mencegah modifikasi tidak sah pada kode sumber
+- **Validasi Kredit Author**: Memastikan informasi author tetap tercantum
 - **Anti-Debugging**: Mencegah reverse engineering dan analisis kode
 - **Kompilasi Protektif**: Mengamankan kode dari upaya pembajakan
 

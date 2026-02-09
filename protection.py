@@ -5,6 +5,13 @@ import sys
 import time
 from datetime import datetime
 
+AUTHOR_CREDIT_STRINGS = [
+    "Letda Kes Dr. Sobri, S.Kom.",
+    "muhammadsobrimaulana31@gmail.com",
+    "github.com/sobri3195",
+    "lynk.id/muhsobrimaulana"
+]
+
 class CodeProtection:
     def __init__(self):
         self.signature = "PEGASUS_SCAN_WEB_TOTAL_BY_SOBRI"
@@ -72,6 +79,24 @@ class CodeProtection:
             print("\033[91m[ERROR] Failed to verify code integrity!\033[0m")
             return False
 
+    def verify_author_credit(self, files=("main.py", "Readme.md")):
+        """Ensure author credit is present in key files"""
+        for file_path in files:
+            if not os.path.exists(file_path):
+                print(f"\033[91m[ERROR] Required file missing: {file_path}\033[0m")
+                return False
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
+                    content = file.read()
+                missing = [credit for credit in AUTHOR_CREDIT_STRINGS if credit not in content]
+                if missing:
+                    print("\033[91m[ERROR] Author credit has been removed or modified!\033[0m")
+                    return False
+            except Exception:
+                print("\033[91m[ERROR] Failed to verify author credit!\033[0m")
+                return False
+        return True
+
     def verify_license(self):
         """Verify the license key"""
         print("\033[96m[*] Verifying license...\033[0m")
@@ -99,6 +124,9 @@ class CodeProtection:
         print("\033[96m[*] Initializing Pegasus protection...\033[0m")
         
         if not self.verify_integrity():
+            sys.exit(1)
+
+        if not self.verify_author_credit():
             sys.exit(1)
             
         if not self.verify_license():
