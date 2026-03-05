@@ -1,4 +1,5 @@
 import argparse
+from collections import Counter
 import concurrent.futures
 import csv
 import json
@@ -7,11 +8,14 @@ import requests
 import socket
 import ssl
 import sys
+import threading
 import time
 import hashlib
 import re
 from datetime import datetime
 from requests.exceptions import RequestException
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from urllib.parse import urlparse
 from protection import CodeProtection, detect_debugging, prevent_modification
 
@@ -88,19 +92,32 @@ def activate_license():
 class PegasusScan:
     def __init__(self, args):
         self.url = args.url
-        self.domain = urlparse(args.url).netloc
-        self.hostname = self.domain
+        parsed_url = urlparse(args.url)
+        self.domain = parsed_url.netloc
+        self.hostname = parsed_url.hostname or self.domain
         self.timeout = args.timeout
         self.output_file = args.output
         self.output_format = args.format
         self.wordlist = args.wordlist
         self.threads = args.threads
         self.verbose = args.verbose
+        self.enabled_scans = set(args.scans)
         self.results = []
+        self.result_fingerprints = set()
+        self.result_lock = threading.Lock()
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'PegasusScan/1.0',
         })
+        retry_strategy = Retry(
+            total=2,
+            backoff_factor=0.2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "HEAD", "OPTIONS", "TRACE"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
         self.base_url = self.url.rstrip("/")
     
     def log(self, message, level="INFO"):
@@ -112,14 +129,22 @@ class PegasusScan:
     
     def add_result(self, scan_type, details, severity="Medium"):
         """Add scan result to the results list"""
-        self.results.append({
-            "scan_type": scan_type,
-            "details": details,
-            "severity": severity,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
-        color = Colors.RED if severity == "Critical" else Colors.YELLOW if severity == "High" else Colors.GREEN
+        fingerprint = hashlib.sha256(f"{scan_type}:{details}:{severity}".encode()).hexdigest()
+        with self.result_lock:
+            if fingerprint in self.result_fingerprints:
+                return
+            self.result_fingerprints.add(fingerprint)
+            self.results.append({
+                "scan_type": scan_type,
+                "details": details,
+                "severity": severity,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
         self.log(f"{scan_type}: {details}", "FOUND")
+
+    def _run_scan(self, key, fn):
+        if key in self.enabled_scans:
+            fn()
 
     def build_url(self, path):
         return f"{self.base_url}/{path.lstrip('/')}"
@@ -587,11 +612,13 @@ class PegasusScan:
             return
             
         try:
+            severity_summary = dict(Counter(item["severity"] for item in self.results))
             if self.output_format == "json":
                 with open(self.output_file, 'w') as f:
                     json.dump({
                         "target": self.url,
                         "scan_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "severity_summary": severity_summary,
                         "results": self.results
                     }, f, indent=4)
             elif self.output_format == "csv":
@@ -605,6 +632,11 @@ class PegasusScan:
                             result["severity"],
                             result["timestamp"]
                         ])
+                    writer.writerow([])
+                    writer.writerow(["Severity Summary"])
+                    writer.writerow(["Severity", "Count"])
+                    for severity, count in sorted(severity_summary.items()):
+                        writer.writerow([severity, count])
             
             self.log(f"Results saved to {self.output_file}")
         except Exception as e:
@@ -616,30 +648,30 @@ class PegasusScan:
         self.log(f"Starting Pegasus Scan on {self.url}")
         
         try:
-            self.scan_vulnerabilities()
-            self.xss_scan()
-            self.sql_injection_scan()
-            self.directory_brute_force()
-            self.enumerate_subdomains()
-            self.scan_http_headers()
-            self.scan_https_redirect()
-            self.scan_http_methods()
-            self.scan_trace_method()
-            self.scan_cookie_security()
-            self.scan_cors_policy()
-            self.scan_directory_listing()
-            self.scan_security_txt()
-            self.scan_sitemap()
-            self.scan_open_redirect()
-            self.scan_backup_files()
+            self._run_scan("vulnerabilities", self.scan_vulnerabilities)
+            self._run_scan("xss", self.xss_scan)
+            self._run_scan("sqli", self.sql_injection_scan)
+            self._run_scan("dir_bruteforce", self.directory_brute_force)
+            self._run_scan("subdomains", self.enumerate_subdomains)
+            self._run_scan("headers", self.scan_http_headers)
+            self._run_scan("https_redirect", self.scan_https_redirect)
+            self._run_scan("http_methods", self.scan_http_methods)
+            self._run_scan("trace", self.scan_trace_method)
+            self._run_scan("cookies", self.scan_cookie_security)
+            self._run_scan("cors", self.scan_cors_policy)
+            self._run_scan("directory_listing", self.scan_directory_listing)
+            self._run_scan("security_txt", self.scan_security_txt)
+            self._run_scan("sitemap", self.scan_sitemap)
+            self._run_scan("open_redirect", self.scan_open_redirect)
+            self._run_scan("backup_files", self.scan_backup_files)
             
             # Only run SSL/TLS scan if using HTTPS
-            if self.url.startswith("https://"):
+            if self.url.startswith("https://") and "ssl_tls" in self.enabled_scans:
                 self.scan_ssl_tls()
                 
-            self.scan_robots_txt()
-            self.scan_sensitive_files()
-            self.detect_cms()
+            self._run_scan("robots", self.scan_robots_txt)
+            self._run_scan("sensitive_files", self.scan_sensitive_files)
+            self._run_scan("cms", self.detect_cms)
             
             # Save the results
             self.save_results()
@@ -653,6 +685,13 @@ class PegasusScan:
             self.save_results()
         except Exception as e:
             self.log(f"Unexpected error during scan: {str(e)}", "ERROR")
+
+available_scans = [
+    "vulnerabilities", "xss", "sqli", "dir_bruteforce", "subdomains", "headers",
+    "https_redirect", "http_methods", "trace", "cookies", "cors", "directory_listing",
+    "security_txt", "sitemap", "open_redirect", "backup_files", "ssl_tls", "robots",
+    "sensitive_files", "cms"
+]
 
 def main():
     # Print banner
@@ -669,6 +708,13 @@ def main():
     parser.add_argument("-f", "--format", choices=["json", "csv"], default="json", help="Output format")
     parser.add_argument("--timeout", type=int, default=10, help="Request timeout in seconds")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
+    parser.add_argument(
+        "--scans",
+        nargs="+",
+        choices=available_scans,
+        default=available_scans,
+        help="Specific scan modules to run (default: all modules)",
+    )
     
     args = parser.parse_args()
     

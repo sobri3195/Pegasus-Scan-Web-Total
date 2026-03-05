@@ -31,6 +31,8 @@ Pegasus Scan Web Total adalah scanner keamanan web komprehensif yang dapat mende
 - **Deteksi Sitemap**: Menemukan sitemap.xml pada target
 - **Deteksi Open Redirect**: Menguji parameter redirect terbuka
 - **Deteksi File Backup**: Mencari file cadangan yang terekspos
+- **Seleksi Modul Scan**: Menjalankan modul tertentu dengan opsi `--scans`
+- **Output Ringkasan Severity**: Menampilkan rekap jumlah temuan berdasarkan tingkat keparahan
 
 ## Sistem Proteksi
 
@@ -83,6 +85,7 @@ python main.py -u https://example.com -w wordlist.txt -o results.json -v
 - `-f, --format`: Format output (json atau csv, default: json)
 - `--timeout`: Timeout permintaan dalam detik (default: 10)
 - `-v, --verbose`: Mengaktifkan output yang lebih detail
+- `--scans`: Memilih modul scan yang dijalankan (default: semua modul)
 
 ## Contoh Penggunaan
 
@@ -102,6 +105,12 @@ python main.py -u https://example.com -w custom_wordlist.txt -v
 
 ```bash
 python main.py -u https://example.com -o results.csv -f csv
+```
+
+### Menjalankan Modul Tertentu Saja
+
+```bash
+python main.py -u https://example.com --scans headers cookies cors ssl_tls
 ```
 
 ### Meningkatkan Performa dengan Thread Lebih Banyak
